@@ -1,29 +1,33 @@
 #!/usr/bin/env python3
 """
-C++ 代码空格规范化脚本
-=======================
-将此脚本放在项目根目录下运行，会自动格式化当前目录及子目录下的 .cpp / .h 文件。
+C++ 代码空格规范化 + 缩进标准化脚本
+=======================================
+将此脚本放在项目根目录下运行，自动格式化 .cpp / .h 文件。
 
-格式化规则（参考 Google C++ Style Guide 部分规则）：
-  1. 关键字后空格：if( → if (、for( → for (、while( → while ( 等
-  2. 左大括号前空格：){ → ) {、else{ → else {
-  3. 逗号后空格：,x → , x
-  4. 分号后空格（同行多语句）：;next → ; next
-  5. 赋值 = 两侧空格：x=y → x = y
-  6. 比较运算符两侧空格：== != <= >= && ||
-  7. 逻辑非 ! 后不留空格：( ! x) → (!x)
-  8. 比较 < > 两侧空格（自动保护模板语法 at<uchar> 不被破坏）
-  9. 流运算符 << >> 两侧空格：cout<<x → cout << x
- 10. 位运算符 | & 两侧空格
- 11. 算术 + - / 两侧空格：a+b → a + b
- 12. 乘号 * 前空格（数字*括号）：0.001*( → 0.001 * (
- 13. else / else if 独立成行（非 K&R 风格）
- 14. 多语句同行时 if/for/while 的 { 折叠到同行
+格式化规则：
+  1. 关键字后空格：if( → if (、for( → for (
+  2. 大括号前空格：){ → ) {、else{ → else {
+  3. 逗号 / 分号后空格
+  4. 赋值 = 两侧空格
+  5. 比较运算符 == != <= >= && || 两侧空格
+  6. 逻辑非 ! 后不留空格
+  7. 比较 < > 两侧空格（保护模板语法 at<uchar>）
+  8. 流 << >> 两侧空格
+  9. 位运算符 | & 两侧空格
+ 10. 算术 + - 两侧空格
+ 11. 数字 * ( 加空格：0.001*( → 0.001 * (
+ 12. else / else if 独立成行
+ 13. 合并控制流 { 到同行
+ 14. 缩进标准化：tab→4空格，对齐到 4 的倍数
+
+重要安全机制：
+  - 先保护所有字符串和模板语法，处理完后还原，防止误伤
+  - 不修改预处理指令和注释
 
 用法：
-  python3 cpp_format.py                    # 格式化当前目录下所有 .cpp/.h
+  python3 cpp_format.py                    # 格式化当前目录
   python3 cpp_format.py /path/to/project   # 格式化指定目录
-  python3 cpp_format.py --dry-run          # 预览变更，不实际写入
+  python3 cpp_format.py --dry-run          # 预览变更，不写入
 """
 
 import re
@@ -32,64 +36,86 @@ import sys
 import argparse
 
 # ============================================================
-# 配置区
+# 配置
 # ============================================================
 
-# 需要处理的文件扩展名
-EXTENSIONS = ('.cpp', '.h', '.hpp', '.c', '.cc', '.cxx', '.hxx')
+EXTENSIONS = ('.cpp', '.h', '.hpp', '.c', '.cc', '.cxx')
 
-# 需要保护不被空格破坏的模板类型名（< 后紧跟这些标识符时不加空格）
-# 因为 at<uchar> 中的 < 是模板语法，不是比较运算符
-TEMPLATE_TYPES = {
-    'uchar', 'int', 'float', 'double', 'char', 'bool', 'void',
-    'size_t', 'uint8_t', 'int32_t', 'int64_t', 'string', 'vector',
-    'Mat', 'Ptr', 'Scalar', 'QByteArray', 'QVector', 'QString',
-    'QHostAddress', 'Size', 'Rect', 'Point',
-}
 
-# ============================================================
-# 辅助函数
-# ============================================================
-
-def protect_patterns(text, patterns, placeholder_prefix):
+def protect_all(text):
     """
-    用占位符保护文本中的特定模式，防止被后续正则误伤。
-    返回 (替换后文本, 占位符→原文的字典)
+    用占位符保护模板语法、字符串字面量、字符字面量。
+    返回 (替换后文本, 占位符→原文 的字典, 下一个可用序号)。
 
-    patterns: 正则表达式列表，每个匹配都会被保护
+    保护内容：
+      1. 模板语法：identifier<type::name>（如 at<uchar>、makePtr<ns::Type>）
+         → 整个包括前面的标识符一起保护，防止 < > 被当成比较运算符破坏
+      2. 字符串字面量："..."
+      3. 字符字面量：'...'
     """
     protected = {}
+    counter = [0]
 
-    def make_protector():
-        def protector(m):
-            key = f"\x00{placeholder_prefix}{len(protected)}\x00"
-            protected[key] = m.group(0)
-            return key
-        return protector
+    def prot(m):
+        key = f"\x00PT{counter[0]}\x00"
+        counter[0] += 1
+        protected[key] = m.group(0)
+        return key
 
-    for pat in patterns:
-        text = re.sub(pat, make_protector(), text)
+    # 1. 保护完整模板：标识符<类型::子类型> 如 at<uchar>、makePtr<wechat_qrcode::WeChatQRCode>
+    text = re.sub(
+        r'\b\w+\s*<\s*\w+(\s*::\s*\w+)*\s*>',
+        prot, text
+    )
 
-    return text, protected
+    # 2. 保护字符串字面量
+    text = re.sub(r'"[^"]*"', prot, text)
+
+    # 3. 保护字符字面量
+    text = re.sub(r"'[^']*'", prot, text)
+
+    return text, protected, counter[0]
 
 
-def restore_protected(text, protected):
-    """将占位符还原为原文"""
-    for key, value in protected.items():
-        text = text.replace(key, value)
+def restore_all(text, protected):
+    """还原所有被保护的占位符"""
+    for key, val in protected.items():
+        text = text.replace(key, val)
     return text
 
 
-# ============================================================
-# 逐行格式化规则（不跨行）
-# ============================================================
+def normalize_indent(line):
+    """
+    标准化缩进：tab → 4 个空格，然后对齐到 4 的倍数。
+    仅处理行首的空白字符。
+    """
+    if not line or line[0] not in (' ', '\t'):
+        return line
+
+    stripped = line.lstrip()
+    leading = line[:len(line) - len(stripped)]
+
+    # tab → 4 spaces
+    leading = leading.replace('\t', '    ')
+
+    # 对齐到 4 的倍数（只能处理纯空格的情况）
+    space_count = len(leading)
+    # 修正：舍入到最近 4 的倍数
+    target = round(space_count / 4) * 4
+    # 但不做大幅修改（可能是故意的半缩进），仅修正常见偏移
+    if space_count > 0 and abs(space_count - target) <= 2 and target > 0:
+        leading = ' ' * target
+
+    return leading + stripped
+
 
 def format_line(line):
     """
-    对单行代码应用所有空格规则。
-    预处理指令（#include 等）、注释行不做处理。
+    对单行代码应用空格规则。
+    注意：入参 line 不得包含行尾换行符！
+    返回格式化后的行（不含行尾换行符）。
     """
-    # 预处理指令不处理（如 #include <...>）
+    # 预处理指令（#include 等）不处理
     if line.lstrip().startswith('#'):
         return line
 
@@ -98,216 +124,133 @@ def format_line(line):
         return line
 
     # 注释行不处理
-    if stripped.startswith('//') or stripped.startswith('/*') or stripped.startswith('*'):
+    if stripped.startswith('//') or stripped.startswith('/*'):
         return line
 
-    # 保留行首缩进
     leading = line[:len(line) - len(stripped)]
     t = stripped
 
-    # --------------------------------------------------
-    # 第一步：保护模板语法和字符串字面量
-    # --------------------------------------------------
-    # 模板模式：<类型名> 或 <命名空间::类型名>
-    # 例如 <uchar>、<wechat_qrcode::WeChatQRCode>、<float>
-    # 如果不保护，后面的 < > 比较运算符规则会破坏它们
-    t, protected = protect_patterns(t, [
-        r'<\s*\w+(\s*::\s*\w+)*\s*>',   # <type> 或 <ns::type>
-        r'"[^"]*"',                       # 字符串字面量 "..."
-    ], 'PROT')
+    # ---- 保护模板和字符串 ----
+    t, protected, _ = protect_all(t)
 
-    # --------------------------------------------------
-    # 第二步：关键字后的空格
-    # --------------------------------------------------
-    # if( → if (、for( → for (、while( → while (、switch( → switch (
+    # ---- 关键字后空格 ----
     for kw in ['if', 'for', 'while', 'switch', 'catch']:
         t = re.sub(r'\b' + kw + r'\(', kw + ' (', t)
-    # else if( → else if (
     t = re.sub(r'\belse\s+if\(', 'else if (', t)
 
-    # --------------------------------------------------
-    # 第三步：大括号前加空格
-    # --------------------------------------------------
-    # }else → } else         （将 else 从 } 上拆下来）
-    t = re.sub(r'\}else\b', '} else', t)
-    # ){ → ) {               （条件后的 { 前加空格）
-    t = re.sub(r'\)\{', ') {', t)
-    # else{ → else {         （else 后的 { 前加空格）
-    t = re.sub(r'\belse\{', 'else {', t)
+    # ---- 大括号前空格 ----
+    t = re.sub(r'\}else\b', '} else', t)       # }else → } else
+    t = re.sub(r'\)\{', ') {', t)               # ){ → ) {
+    t = re.sub(r'\belse\{', 'else {', t)        # else{ → else {
 
-    # --------------------------------------------------
-    # 第四步：逗号和分号后的空格
-    # --------------------------------------------------
-    # ,x → , x               （逗号后加空格，但不破坏字符串内的逗号）
-    t = re.sub(r',([^\s"\'\\])', r', \1', t)
-    # ;next → ; next         （同行多语句时分号后加空格）
-    t = re.sub(r';([a-zA-Z_])', r'; \1', t)
+    # ---- 逗号、分号后空格 ----
+    t = re.sub(r',([^\s])', r', \1', t)         # ,x → , x
+    t = re.sub(r';([a-zA-Z_])', r'; \1', t)      # ;x → ; x
 
-    # --------------------------------------------------
-    # 第五步：赋值 = 两侧加空格
-    # --------------------------------------------------
-    # 匹配标识符]=值 或 标识符=值 的模式，但排除 == != <= >= 等复合运算符
-    # 例如：x=y → x = y、arr[0]=5 → arr[0] = 5
+    # ---- 赋值 = 两侧空格（跳过 == != <= >=）----
     t = re.sub(r'([a-zA-Z0-9_\]\)])=([^= ])', r'\1 = \2', t)
-    # 行尾的 = 也要处理
     t = re.sub(r'([a-zA-Z0-9_\]\)])=$', r'\1 = ', t)
 
-    # --------------------------------------------------
-    # 第六步：比较运算符两侧加空格
-    # --------------------------------------------------
-    # == != <= >= && ||
+    # ---- 比较运算符 ----
     for op in ['==', '!=', '<=', '>=', '&&', r'\|\|']:
-        clean_op = op.replace('\\', '')  # 去掉转义符用于替换
+        clean = op.replace('\\', '')
         t = re.sub(
             r'([a-zA-Z0-9_)\]])' + op + r'([a-zA-Z0-9_\[\(!])',
-            r'\1 ' + clean_op + r' \2',
-            t
+            r'\1 ' + clean + r' \2', t
         )
 
-    # --------------------------------------------------
-    # 第七步：逻辑非 ! 后面不留空格
-    # --------------------------------------------------
-    # ( ! x) → (!x)
+    # ---- ! 逻辑非后不留空格 ----
     t = re.sub(r'\(\s*!\s*', '(!', t)
-    # 通用：! 后面跟标识符时去掉中间空格
     t = re.sub(r'!\s+([a-zA-Z_])', r'!\1', t)
 
-    # --------------------------------------------------
-    # 第八步：比较 < > 两侧加空格
-    # --------------------------------------------------
-    # 此时模板语法已被保护，剩下的 < > 都是比较运算符
+    # ---- 比较 < > 两侧空格（模板已保护，剩下都是比较）----
     t = re.sub(r'([a-zA-Z0-9_\)\]])\s*<\s*([a-zA-Z0-9_\(])', r'\1 < \2', t)
     t = re.sub(r'([a-zA-Z0-9_\)\]])\s*>\s*([a-zA-Z0-9_\(])', r'\1 > \2', t)
 
-    # --------------------------------------------------
-    # 第九步：流运算符 << >> 两侧加空格
-    # --------------------------------------------------
-    # cout<<x → cout << x、qDebug()<<"text" → qDebug() << "text"
+    # ---- 流运算符 << >> ----
     t = re.sub(r'(\w|\)|\]|")<<(\w|")', r'\1 << \2', t)
     t = re.sub(r'(\w|\)|\]|")>>(\w|")', r'\1 >> \2', t)
 
-    # --------------------------------------------------
-    # 第十步：位运算符 | & 两侧加空格
-    # --------------------------------------------------
-    # flag|mask → flag | mask（不破坏 ||）
+    # ---- 位运算符 | &（不破坏 || &&）----
     t = re.sub(r'(\w|\]|\))\|(\w|\()', r'\1 | \2', t)
-    # val&0xff → val & 0xff（不破坏 &&）
     t = re.sub(r'([a-zA-Z0-9_\)\]]\S)&(\d)', r'\1 & \2', t)
     t = re.sub(r'([a-zA-Z0-9_\)\]]\S)&([a-zA-Z_])', r'\1 & \2', t)
 
-    # --------------------------------------------------
-    # 第十一步：算术运算符两侧加空格
-    # --------------------------------------------------
-    # )+ 和 ]+ 后加空格（如 val[2])+"text" → val[2]) + "text"）
+    # ---- 算术 + -（在 ) 或 ] 之后的）----
     t = re.sub(r'(\)|\])\+', r'\1 + ', t)
-    # )- 和 ]- 后加空格
     t = re.sub(r'(\)|\])\-', r'\1 - ', t)
-    # )* ( → 保持不变，但 数字*( 需要加空格（如 0.001*( → 0.001 * (）
+
+    # ---- 数字*( → 数字 * ( ----
     t = re.sub(r'(\d)\*\(', r'\1 * (', t)
     t = re.sub(r'(\))\*\(', r'\1 * (', t)
 
-    # --------------------------------------------------
-    # 第十二步：还原保护的模板和字符串
-    # --------------------------------------------------
-    t = restore_protected(t, protected)
+    # ---- 还原保护的模板和字符串 ----
+    t = restore_all(t, protected)
 
-    # --------------------------------------------------
-    # 第十三步：清理多余空格
-    # --------------------------------------------------
-    # 多个连续空格合并为一个
-    t = re.sub(r' {2,}', ' ', t)
-    # 分号前多余空格去掉
-    t = re.sub(r' +;', ';', t)
+    # ---- 清理多余空格 ----
+    t = re.sub(r' {2,}', ' ', t)       # 多个空格合并
+    t = re.sub(r' +;', ';', t)          # 分号前多余空格
 
     return leading + t
 
 
 # ============================================================
-# 跨行格式化规则
+# 跨行处理
 # ============================================================
 
 def collapse_braces(lines):
     """
-    将 if/for/while/switch 的条件行和下一行的 { 合并为一行。
-
-    例如：
-        if (condition)
-        {              →  if (condition) {
+    如果控制流语句的下一行只有一个 {，合并到同行。
+    例如：if (...)\n    {   →   if (...) {
     """
     result = []
-    skip_next = False
-
+    skip = False
     for i, line in enumerate(lines):
-        if skip_next:
-            skip_next = False
+        if skip:
+            skip = False
             continue
-
         s = line.rstrip()
         nxt = lines[i + 1].rstrip() if i + 1 < len(lines) else ""
-
-        # 下一行是否只有一个 {
         if nxt.lstrip().startswith('{'):
             ls = s.lstrip()
-            # 是控制流关键字行？
-            is_control = any(
+            is_ctrl = any(
                 ls.startswith(kw + ' (') or ls.startswith(kw + '(')
                 for kw in ['if', 'else if', 'for', 'while', 'switch']
             )
-            # 或者是 } else 行？
-            is_else = ls.startswith('} else')
-
-            if is_control or is_else:
+            if is_ctrl or ls.startswith('} else'):
                 result.append(s + ' {')
-                # 处理 { 后面可能还有内容的情况（极少见）
-                remaining = nxt.lstrip()[1:].lstrip()
-                if remaining:
-                    result.append(' ' * (len(nxt) - len(nxt.lstrip())) + remaining)
-                skip_next = True
+                rem = nxt.lstrip()[1:].lstrip()
+                if rem:
+                    result.append(' ' * (len(nxt) - len(nxt.lstrip())) + rem)
+                skip = True
                 continue
-
-        result.append(line.rstrip('\n'))
-
-    return [l + '\n' for l in result]
+        result.append(line)
+    return result
 
 
 def split_else_lines(text):
     """
     将 } else 拆分为两行（else 独立成行）。
-
-    例如：
-        } else if (cond) {   →   }
-                                 else if (cond) {
-        } else {             →   }
-                                 else {
-        } else stmt;         →   }
-                                 else stmt;
-
-    缩进与原来的 } 保持一致。
+    例如：    } else {   →   }\n    else {
     """
-    # } else if (condition) { → }\n    else if (condition) {
+    # } else if (cond) { → }\n    else if (cond) {
     text = re.sub(
         r'^(\s*)\}\s*(else if\s*\([^)]*\))\s*\{',
         lambda m: m.group(1) + '}\n' + m.group(1) + m.group(2) + ' {',
-        text,
-        flags=re.MULTILINE
+        text, flags=re.MULTILINE
     )
-
     # } else { → }\n    else {
     text = re.sub(
         r'^(\s*)\}\s*else\s*\{',
         lambda m: m.group(1) + '}\n' + m.group(1) + 'else {',
-        text,
-        flags=re.MULTILINE
+        text, flags=re.MULTILINE
     )
-
     # } else 语句; → }\n    else 语句;
     text = re.sub(
         r'^(\s*)\}\s*else\s+([^{])',
         lambda m: m.group(1) + '}\n' + m.group(1) + 'else ' + m.group(2),
-        text,
-        flags=re.MULTILINE
+        text, flags=re.MULTILINE
     )
-
     return text
 
 
@@ -317,54 +260,74 @@ def split_else_lines(text):
 
 def format_file(filepath, dry_run=False):
     """
-    格式化单个文件。
-
-    处理流程：
-      1. 逐行应用空格规则
-      2. 折叠控制流的大括号（collapse_braces）
-      3. 拆分 else 到独立行（split_else_lines）
-
-    返回修改行数。
+    格式化单个文件。处理流程：
+      1. 标准化缩进（normalize_indent）
+      2. 逐行空格规则（format_line）
+      3. 合并控制流大括号（collapse_braces）
+      4. 拆分 else 到独立行（split_else_lines）
     """
-    with open(filepath, 'r', encoding='utf-8') as f:
-        lines = f.readlines()
+    # 二进制模式读取，保留原始行尾样式
+    with open(filepath, 'rb') as f:
+        raw = f.read()
 
-    original = ''.join(lines)
+    # 检测原始行尾样式
+    if b'\r\n' in raw:
+        line_ending = '\r\n'
+    elif b'\r' in raw:
+        line_ending = '\r'
+    else:
+        line_ending = '\n'
 
-    # 第 1 遍：逐行空格规则
+    text = raw.decode('utf-8')
+    original = text
+    lines = text.split('\n')  # 用 \n 分割，\r 会在 rstrip 时处理
+
+    # 第 1 遍：缩进标准化
     for i in range(len(lines)):
-        new_line = format_line(lines[i])
-        if new_line != lines[i].rstrip('\n'):
-            lines[i] = new_line + '\n'
+        lines[i] = normalize_indent(lines[i])
 
-    # 第 2 遍：折叠大括号
+    # 第 2 遍：逐行空格规则
+    for i in range(len(lines)):
+        # format_line 期望不含行尾符的纯文本行
+        clean = lines[i].rstrip('\r')
+        formatted = format_line(clean)
+        if formatted != clean:
+            lines[i] = formatted
+
+    # 第 3 遍：合并大括号
     lines = collapse_braces(lines)
 
-    # 第 3 遍：拆分 else 到独立行
-    text = ''.join(lines)
+    # 第 4 遍：拆分 else 到独立行
+    text = '\n'.join(lines)
     text = split_else_lines(text)
 
+    # 还原正确的行尾样式
+    if line_ending != '\n':
+        text = text.replace('\n', line_ending)
+
     if not dry_run and text != original:
-        with open(filepath, 'w', encoding='utf-8') as f:
-            f.write(text)
+        with open(filepath, 'wb') as f:
+            f.write(text.encode('utf-8'))
 
-    # 计算修改行数
-    new_lines = text.split('\n')
+    # 统计修改行数
     old_lines = original.split('\n')
-    changed = sum(1 for i, (o, n) in enumerate(zip(old_lines, new_lines)) if o != n)
+    new_lines = text.split('\n')
+    changed = sum(1 for i, (o, n) in enumerate(zip(old_lines, new_lines))
+                  if o.rstrip('\r') != n.rstrip('\r'))
     changed += abs(len(new_lines) - len(old_lines))
-
     return changed
 
 
 def find_files(root_dir):
-    """递归查找所有 C++ 源文件"""
+    """递归查找 C++ 源文件，跳过自动生成文件"""
     result = []
+    skip_prefix = ('moc_', 'ui_', 'robot_control_lcmt')
     for dirpath, dirnames, filenames in os.walk(root_dir):
-        # 跳过隐藏目录和常见的非源码目录
-        dirnames[:] = [d for d in dirnames if not d.startswith('.') and d not in ('build', 'cmake-build')]
+        dirnames[:] = [d for d in dirnames
+                       if not d.startswith('.')
+                       and d not in ('build', 'cmake-build-debug', 'cmake-build-release')]
         for f in filenames:
-            if f.endswith(EXTENSIONS) and not f.startswith('moc_') and not f.startswith('ui_'):
+            if f.endswith(EXTENSIONS) and not f.startswith(skip_prefix):
                 result.append(os.path.join(dirpath, f))
     return result
 
@@ -374,20 +337,11 @@ def find_files(root_dir):
 # ============================================================
 
 def main():
-    parser = argparse.ArgumentParser(
-        description='C++ 代码空格规范化工具',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-示例：
-  python3 cpp_format.py                  # 格式化当前目录
-  python3 cpp_format.py /path/to/project # 格式化指定目录
-  python3 cpp_format.py --dry-run        # 仅预览，不修改文件
-        """
-    )
+    parser = argparse.ArgumentParser(description='C++ 代码空格规范化 + 缩进标准化工具')
     parser.add_argument('path', nargs='?', default='.',
-                        help='项目根目录路径（默认当前目录）')
+                        help='项目根目录（默认当前目录）')
     parser.add_argument('--dry-run', action='store_true',
-                        help='预览模式：显示修改行数但不写入文件')
+                        help='预览模式，不实际修改文件')
     args = parser.parse_args()
 
     root = os.path.abspath(args.path)
@@ -397,17 +351,21 @@ def main():
 
     files = find_files(root)
     print(f"找到 {len(files)} 个 C++ 源文件")
-    print(f"模式：{'预览（不修改）' if args.dry_run else '直接修改'}\n")
+    if args.dry_run:
+        print("模式：预览（不修改文件）\n")
+    else:
+        print("模式：直接修改\n")
 
-    total_changed = 0
+    total = 0
     for f in files:
         changed = format_file(f, dry_run=args.dry_run)
         rel = os.path.relpath(f, root)
-        if changed > 0:
-            print(f"  [{changed:4d} 行] {rel}")
-        total_changed += changed
+        if changed:
+            print(f"  [{changed:4d} 行变更] {rel}")
+        total += changed
 
-    print(f"\n共修改 {total_changed} 行。{'（预览模式，未实际写入）' if args.dry_run else ''}")
+    print(f"\n共 {total} 行变更。" +
+          ("（预览模式，未实际写入）" if args.dry_run else ""))
 
 
 if __name__ == "__main__":
